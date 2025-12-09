@@ -72,7 +72,10 @@ class LeaderArmNode(Node):
         self.start_time = None
         self.last_effort_time = None
         self.waiting_for_follower = True
+        self.shutdown_requested = False  # Flag to prevent restart after emergency
         
+        self.stopping_sequence_start = None
+
         # Move to home position
         self.move_to_home()
         
@@ -80,6 +83,22 @@ class LeaderArmNode(Node):
         self.timer = self.create_timer(1.0 / publish_rate, self.timer_callback)
         
         self.get_logger().info('Leader arm node initialized and ready!')
+    
+    def emergency_stop(self):
+        """Emergency stop - immediately go to sleep position"""
+        self.get_logger().error('EMERGENCY STOP - Moving to sleep position')
+        self.teleop_active = False
+        self.shutdown_requested = True  # Prevent any restart
+        try:
+            self.driver.set_all_modes(trossen_arm.Mode.position)
+            self.driver.set_all_positions(
+                np.zeros(self.driver.get_num_joints()),
+                2.0,
+                True
+            )
+            self.get_logger().info('Leader at sleep position')
+        except Exception as e:
+            self.get_logger().error(f'Failed to move to sleep: {e}')
     
     def move_to_home(self):
         """Move the leader arm to home position"""
@@ -107,10 +126,15 @@ class LeaderArmNode(Node):
         """Start teleoperation mode"""
         if not self.teleop_active:
             self.get_logger().info('Starting teleoperation mode...')
-            self.driver.set_all_modes(trossen_arm.Mode.external_effort)
-            self.teleop_active = True
-            self.start_time = self.get_clock().now()
-            self.waiting_for_follower = False
+            try:
+                self.driver.set_all_modes(trossen_arm.Mode.external_effort)
+                self.teleop_active = True
+                self.start_time = self.get_clock().now()
+                self.waiting_for_follower = False
+            except Exception as e:
+                self.get_logger().error(f'Failed to enter external_effort mode: {e}')
+                self.emergency_stop()
+                raise
     
     def check_follower_connection(self):
         """Check if we're receiving data from follower"""
@@ -122,56 +146,84 @@ class LeaderArmNode(Node):
     
     def stop_teleoperation(self):
         """Stop teleoperation mode"""
-        if self.teleop_active:
-            self.get_logger().info('Stopping teleoperation mode...')
-            self.teleop_active = False
+        if not self.shutdown_requested:
+            self.get_logger().info('Shutting down hardware...')
+            self.shutdown_requested = True
             self.move_to_home()
             self.move_to_sleep()
     
     def timer_callback(self):
         """Publish leader arm state at fixed rate"""
-        if not self.teleop_active:
-            # Wait for follower before starting
-            if self.waiting_for_follower:
-                if self.last_effort_time is None:
-                    self.get_logger().info('Waiting for follower node...', throttle_duration_sec=5.0)
-                    return
-                else:
-                    self.get_logger().info('Follower detected! Starting teleoperation.')
-            
-            self.start_teleoperation()
+        # Check if shutdown was requested (emergency stop or timeout)
+        if self.shutdown_requested:
+            return  # Stop all operations permanently
         
-        # Check if teleoperation time has expired
+        # --- PHASE 3: CHECK FOR DELAY COMPLETION ---
+        if self.stopping_sequence_start is not None:
+            time_since_stop = (self.get_clock().now() - self.stopping_sequence_start).nanoseconds / 1e9
+            if time_since_stop >= 2.0: # Wait 2 seconds
+                self.get_logger().info('Graceful shutdown delay complete.')
+                self.stop_teleoperation() # Physical move
+            return # Don't do anything else while waiting
+
+        # --- WAITING FOR CONNECTION ---
+        if not self.teleop_active:
+            if self.waiting_for_follower:
+                self.get_logger().info('Waiting for follower node...', throttle_duration_sec=2.0)
+                if self.check_follower_connection():
+                    self.get_logger().info('Follower detected! Starting teleoperation.')
+                    try:
+                        self.start_teleoperation()
+                    except Exception as e:
+                        self.get_logger().error(f'Failed to start teleop: {e}')
+                        self.emergency_stop()
+            return
+
+        # --- PHASE 1: CHECK TIMER ---
         if self.teleop_active and self.start_time is not None:
             elapsed = (self.get_clock().now() - self.start_time).nanoseconds / 1e9
             if elapsed >= self.teleoperation_time:
-                self.stop_teleoperation()
+                self.get_logger().info('Timer finished. Stopping data transmission (Graceful Shutdown).')
+                self.teleop_active = False # Stop publishing IMMEDIATELY
+                self.stopping_sequence_start = self.get_clock().now() # Start the delay timer
                 return
-        
+
         # Watchdog: Check if follower is still connected
         if self.teleop_active and not self.check_follower_connection():
-            self.get_logger().error('Lost connection to follower! Stopping teleoperation.')
-            self.stop_teleoperation()
+            self.get_logger().error('Lost connection to follower! Emergency stop.')
+            self.emergency_stop()
             return
         
+        # --- PHASE 2: PUBLISH DATA ---
         if self.teleop_active:
-            # Get current positions and velocities
-            positions = self.driver.get_all_positions()
-            velocities = self.driver.get_all_velocities()
-            
-            # Convert VectorDouble to list
-            positions_list = [positions[i] for i in range(len(positions))]
-            velocities_list = [velocities[i] for i in range(len(velocities))]
-            
-            # Publish positions
-            pos_msg = Float64MultiArray()
-            pos_msg.data = positions_list
-            self.position_pub.publish(pos_msg)
-            
-            # Publish velocities
-            vel_msg = Float64MultiArray()
-            vel_msg.data = velocities_list
-            self.velocity_pub.publish(vel_msg)
+            try:
+                # Get current positions and velocities
+                positions = self.driver.get_all_positions()
+                velocities = self.driver.get_all_velocities()
+                
+                # Convert VectorDouble to list
+                positions_list = [positions[i] for i in range(len(positions))]
+                velocities_list = [velocities[i] for i in range(len(velocities))]
+                
+                # SAFETY CHECK: Validate positions before publishing
+                max_angle = 6.28  # ~2π radians
+                if any(abs(p) > max_angle for p in positions_list):
+                    self.get_logger().error(f'Leader position out of bounds: {positions_list}')
+                    self.emergency_stop()
+                    return
+                
+                # Publish positions
+                pos_msg = Float64MultiArray()
+                pos_msg.data = positions_list
+                self.position_pub.publish(pos_msg)
+                
+                # Publish velocities
+                vel_msg = Float64MultiArray()
+                vel_msg.data = velocities_list
+                self.velocity_pub.publish(vel_msg)
+            except Exception as e:
+                self.get_logger().error(f'Error in main loop: {e}')
+                self.emergency_stop()
     
     def effort_callback(self, msg):
         """Receive external efforts from follower and apply to leader"""
@@ -191,7 +243,7 @@ class LeaderArmNode(Node):
         """Cleanup before shutting down"""
         self.get_logger().info('Shutting down leader arm node...')
         if self.teleop_active:
-            self.stop_teleoperation()
+            self.emergency_stop()
         super().destroy_node()
 
 

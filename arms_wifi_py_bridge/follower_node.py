@@ -66,7 +66,9 @@ class FollowerArmNode(Node):
         # State variables
         self.teleop_active = False
         self.latest_velocities = None
+        self.shutdown_requested = False  # Flag to prevent restart after emergency
         
+        self.last_packet_time = self.get_clock().now()
         # Move to home position
         self.move_to_home()
         
@@ -74,6 +76,22 @@ class FollowerArmNode(Node):
         self.timer = self.create_timer(1.0 / publish_rate, self.timer_callback)
         
         self.get_logger().info('Follower arm node initialized and ready!')
+    
+    def emergency_stop(self):
+        """Emergency stop - immediately go to sleep position"""
+        self.get_logger().error('EMERGENCY STOP - Moving to sleep position')
+        self.teleop_active = False
+        self.shutdown_requested = True  # Prevent any restart
+        try:
+            self.driver.set_all_modes(trossen_arm.Mode.position)
+            self.driver.set_all_positions(
+                np.zeros(self.driver.get_num_joints()),
+                2.0,
+                True
+            )
+            self.get_logger().info('Follower at sleep position')
+        except Exception as e:
+            self.get_logger().error(f'Failed to move to sleep: {e}')
     
     def move_to_home(self):
         """Move the follower arm to home position"""
@@ -109,43 +127,86 @@ class FollowerArmNode(Node):
         if self.teleop_active:
             self.get_logger().info('Stopping teleoperation mode...')
             self.teleop_active = False
+            self.shutdown_requested = True  # Prevent restart
             self.move_to_home()
             self.move_to_sleep()
     
     def timer_callback(self):
+
+        if self.shutdown_requested:
+            return
+
+        # NEW: WATCHDOG CHECK
+        # If we haven't heard from the leader in 1.0 second, shut down
+        # This will trigger when the Leader enters the "Delay Phase"
+        if self.teleop_active:
+            silence_duration = (self.get_clock().now() - self.last_packet_time).nanoseconds / 1e9
+            if silence_duration > 1.0:
+                self.get_logger().warn('No data from Leader for 1.0s. Initiating safety shutdown.')
+                self.stop_teleoperation()
+                return
+            
         """Publish follower external efforts at fixed rate"""
+        # Check if shutdown was requested (emergency stop)
+        if self.shutdown_requested:
+            return  # Stop all operations permanently
+        
         # Always publish efforts (even when not teleoperating)
         # This allows leader to detect that follower is alive
-        efforts = self.driver.get_all_external_efforts()
-        
-        # Convert VectorDouble to list
-        efforts_list = [efforts[i] for i in range(len(efforts))]
-        
-        effort_msg = Float64MultiArray()
-        effort_msg.data = efforts_list
-        self.effort_pub.publish(effort_msg)
+        try:
+            efforts = self.driver.get_all_external_efforts()
+            
+            # Convert VectorDouble to list
+            efforts_list = [efforts[i] for i in range(len(efforts))]
+            
+            effort_msg = Float64MultiArray()
+            effort_msg.data = efforts_list
+            self.effort_pub.publish(effort_msg)
+        except Exception as e:
+            self.get_logger().error(f'Failed to read/publish efforts: {e}', throttle_duration_sec=1.0)
+            self.emergency_stop()
     
     def position_callback(self, msg):
+
+        self.last_packet_time = self.get_clock().now()
+
         """Receive positions from leader and apply to follower"""
+        # Check if shutdown was requested
+        if self.shutdown_requested:
+            return  # Ignore all commands after shutdown
+        
         if not self.teleop_active:
             self.start_teleoperation()
         
         positions = np.array(msg.data)
         
-        # Apply positions with velocities if available
-        if self.latest_velocities is not None:
-            self.driver.set_all_positions(
-                positions,
-                0.0,
-                False,
-                self.latest_velocities
-            )
-        else:
-            self.driver.set_all_positions(
-                positions,
-                0.0,
-                False
-            )
+        # SAFETY CHECK: Validate positions are within reasonable bounds
+        # Joint limits for WXAI V0: approximately [-2π, 2π] for most joints
+        max_angle = 6.28  # ~2π radians
+        if np.any(np.abs(positions) > max_angle):
+            self.get_logger().error(f'Received invalid position command: {positions}')
+            self.get_logger().error('Position exceeds joint limits! Emergency stop.')
+            self.emergency_stop()
+            return
+        
+        try:
+            # Apply positions with velocities if available
+            if self.latest_velocities is not None:
+                self.driver.set_all_positions(
+                    positions,
+                    0.0,
+                    False,
+                    self.latest_velocities
+                )
+            else:
+                self.driver.set_all_positions(
+                    positions,
+                    0.0,
+                    False
+                )
+        except Exception as e:
+            self.get_logger().error(f'Failed to set positions: {e}')
+            self.emergency_stop()
     
     def velocity_callback(self, msg):
         """Store latest velocities from leader"""
@@ -155,7 +216,7 @@ class FollowerArmNode(Node):
         """Cleanup before shutting down"""
         self.get_logger().info('Shutting down follower arm node...')
         if self.teleop_active:
-            self.stop_teleoperation()
+            self.emergency_stop()
         super().destroy_node()
 
 

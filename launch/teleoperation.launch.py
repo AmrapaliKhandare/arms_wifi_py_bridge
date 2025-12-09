@@ -26,7 +26,7 @@ def generate_launch_description():
     
     teleoperation_time_arg = DeclareLaunchArgument(
         'teleoperation_time',
-        default_value='5.0',
+        default_value='10.0',
         description='Duration of teleoperation in seconds'
     )
     
