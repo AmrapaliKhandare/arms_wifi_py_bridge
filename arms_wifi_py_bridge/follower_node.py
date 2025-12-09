@@ -227,7 +227,19 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        pass
+        node.get_logger().info('Ctrl+C detected! Parking follower arm safely...')
+        
+        # 1. Stop Logic
+        node.teleop_active = False 
+        node.shutdown_requested = True
+        
+        # 2. Park Immediately (Home -> Sleep)
+        try:
+            node.move_to_home()
+            node.move_to_sleep()
+        except Exception as e:
+            node.get_logger().error(f'Error during park: {e}')
+            
     finally:
         node.destroy_node()
         if rclpy.ok():
