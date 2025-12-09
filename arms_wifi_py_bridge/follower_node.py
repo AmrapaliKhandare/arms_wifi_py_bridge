@@ -18,7 +18,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray
 import trossen_arm
-
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 class FollowerArmNode(Node):
     def __init__(self):
@@ -43,24 +43,30 @@ class FollowerArmNode(Node):
             self.server_ip,
             False
         )
+
+        qos_profile = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT, # UDP-like (drops packets if needed)
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1 # Only keep the SINGLE latest message
+        )
         
         # Publishers and Subscribers
         self.effort_pub = self.create_publisher(
             Float64MultiArray,
             '/follower/external_efforts',
-            10
+            qos_profile
         )
         self.position_sub = self.create_subscription(
             Float64MultiArray,
             '/leader/joint_positions',
             self.position_callback,
-            10
+            qos_profile
         )
         self.velocity_sub = self.create_subscription(
             Float64MultiArray,
             '/leader/joint_velocities',
             self.velocity_callback,
-            10
+            qos_profile
         )
         
         # State variables
