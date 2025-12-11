@@ -262,23 +262,27 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        node.get_logger().info('Ctrl+C detected! initiating graceful shutdown...')
+
+        if node.shutdown_requested:
+            node.get_logger().info('Clean exit (already shut down).')
+        else:
+            node.get_logger().info('Ctrl+C detected! initiating graceful shutdown...')
         
-        # 1. Stop sending data IMMEDIATELY
-        node.teleop_active = False
-        node.shutdown_requested = True
-        
-        # 2. WAIT for Follower to park (The Graceful Delay)
-        node.get_logger().info('Waiting 2.0s for follower to park...')
-        time.sleep(2.0) 
-        
-        # 3. Park Leader (Home -> Sleep)
-        node.get_logger().info('Parking leader arm...')
-        try:
-            node.move_to_home()
-            node.move_to_sleep()
-        except Exception as e:
-            node.get_logger().error(f'Error during park: {e}')
+            # 1. Stop sending data IMMEDIATELY
+            node.teleop_active = False
+            node.shutdown_requested = True
+            
+            # 2. WAIT for Follower to park (The Graceful Delay)
+            node.get_logger().info('Waiting 2.0s for follower to park...')
+            time.sleep(2.0) 
+            
+            # 3. Park Leader (Home -> Sleep)
+            node.get_logger().info('Parking leader arm...')
+            try:
+                node.move_to_home()
+                node.move_to_sleep()
+            except Exception as e:
+                node.get_logger().error(f'Error during park: {e}')
             
     finally:
         node.destroy_node()
