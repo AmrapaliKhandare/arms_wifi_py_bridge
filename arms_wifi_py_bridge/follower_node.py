@@ -92,7 +92,7 @@ class FollowerArmNode(Node):
             self.driver.set_all_modes(trossen_arm.Mode.position)
             self.driver.set_all_positions(
                 np.zeros(self.driver.get_num_joints()),
-                2.0,
+                5.0,
                 True
             )
             self.get_logger().info('Follower at sleep position')
@@ -105,7 +105,7 @@ class FollowerArmNode(Node):
         self.driver.set_all_modes(trossen_arm.Mode.position)
         self.driver.set_all_positions(
             np.array([0.0, np.pi/2, np.pi/2, 0.0, 0.0, 0.0, 0.0]),
-            2.0,
+            5.0,
             True
         )
         self.get_logger().info('Follower at home position')
@@ -116,7 +116,7 @@ class FollowerArmNode(Node):
         self.driver.set_all_modes(trossen_arm.Mode.position)
         self.driver.set_all_positions(
             np.zeros(self.driver.get_num_joints()),
-            2.0,
+            5.0,
             True
         )
         self.get_logger().info('Follower at sleep position')

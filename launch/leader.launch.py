@@ -38,6 +38,7 @@ def generate_launch_description():
         executable='leader_node',
         name='leader_arm_node',
         output='screen',
+        sigterm_timeout='30',
         parameters=[{
             'server_ip': LaunchConfiguration('leader_ip'),
             'force_feedback_gain': LaunchConfiguration('force_feedback_gain'),

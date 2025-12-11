@@ -26,6 +26,7 @@ def generate_launch_description():
         executable='follower_node',
         name='follower_arm_node',
         output='screen',
+        sigterm_timeout='30',
         parameters=[{
             'server_ip': LaunchConfiguration('follower_ip'),
             'publish_rate': LaunchConfiguration('publish_rate'),
