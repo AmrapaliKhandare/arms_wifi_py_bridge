@@ -81,5 +81,5 @@ ros2 launch arms_wifi_py_bridge follower.launch.py
 * Start with both arms in a safe configuration.
 
 ## Author
-* Developed by Amrapali Khandare
-* Riviere Robot Lab, NYU
+Developed by Amrapali Khandare  
+Riviere Robot Lab, NYU
